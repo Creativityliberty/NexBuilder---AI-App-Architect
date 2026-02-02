@@ -1,16 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Project, ProjectFile } from '../types';
-import { Download, Monitor, Code, FileCode, RefreshCw } from 'lucide-react';
+import { Download, Monitor, Code, FileCode, RefreshCw, AlertTriangle, Wrench, X } from 'lucide-react';
+import Editor from "@monaco-editor/react";
 
 interface CodePreviewProps {
   project: Project;
+  onFixError?: (errorMsg: string, stack: string) => void;
+  onUpdateFile?: (path: string, newContent: string) => void;
 }
 
-const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
+const CodePreview: React.FC<CodePreviewProps> = ({ project, onFixError, onUpdateFile }) => {
   const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
   const [selectedFile, setSelectedFile] = useState<ProjectFile | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [key, setKey] = useState(0); // Force iframe refresh
+  const [runtimeError, setRuntimeError] = useState<{message: string, stack: string} | null>(null);
 
   // Set default selected file
   useEffect(() => {
@@ -21,8 +25,21 @@ const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
     }
   }, [project.files, selectedFile]);
 
-  // Construct the preview blob
+  // Sync selected file content when project updates (if external update happened)
   useEffect(() => {
+    if (selectedFile) {
+        const latest = project.files.find(f => f.path === selectedFile.path);
+        if (latest && latest !== selectedFile) {
+            setSelectedFile(latest);
+        }
+    }
+  }, [project.files, selectedFile]);
+
+  // Construct the preview blob - Only when in Preview mode or explicitly refreshed
+  useEffect(() => {
+    if (activeTab !== 'preview') return;
+    
+    setRuntimeError(null); // Clear errors on refresh
     if (project.files.length === 0) return;
 
     // Naive bundler for preview
@@ -51,6 +68,39 @@ const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
          }
       });
 
+      // ---------------------------------------------------------
+      // FEATURE: SELF-HEALING ERROR INJECTION
+      // ---------------------------------------------------------
+      const errorTrapScript = `
+        <script>
+          window.onerror = function(message, source, lineno, colno, error) {
+            window.parent.postMessage({
+              type: 'NEXBUILDER_RUNTIME_ERROR',
+              payload: {
+                message: message,
+                stack: error ? error.stack : 'No stack trace available. Check line ' + lineno
+              }
+            }, '*');
+          };
+          window.addEventListener('unhandledrejection', function(event) {
+            window.parent.postMessage({
+              type: 'NEXBUILDER_RUNTIME_ERROR',
+              payload: {
+                message: 'Unhandled Promise Rejection: ' + event.reason,
+                stack: ''
+              }
+            }, '*');
+          });
+        </script>
+      `;
+      // Inject at the very top of head to catch everything
+      if (content.includes('<head>')) {
+        content = content.replace('<head>', `<head>${errorTrapScript}`);
+      } else {
+        content = `${errorTrapScript}${content}`;
+      }
+      // ---------------------------------------------------------
+
       const blob = new Blob([content], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       setPreviewUrl(url);
@@ -61,7 +111,20 @@ const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
       const blob = new Blob(['<html><body style="color:white; background:#0f172a; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh;"><h1>No index.html found</h1></body></html>'], { type: 'text/html' });
       setPreviewUrl(URL.createObjectURL(blob));
     }
-  }, [project.files, key]);
+  }, [project.files, key, activeTab]);
+
+  // Listen for errors from the iframe
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'NEXBUILDER_RUNTIME_ERROR') {
+        console.warn("Captured App Error:", event.data.payload);
+        setRuntimeError(event.data.payload);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   const handleExport = () => {
     if (!(window as any).JSZip || !(window as any).saveAs) {
@@ -79,6 +142,12 @@ const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
     });
   };
 
+  const handleEditorChange = (value: string | undefined) => {
+    if (value !== undefined && selectedFile && onUpdateFile) {
+        onUpdateFile(selectedFile.path, value);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col p-6 animate-in fade-in">
       <div className="flex justify-between items-center mb-6">
@@ -90,7 +159,7 @@ const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
             onClick={() => setKey(p => p + 1)}
             className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors text-sm font-medium"
           >
-            <RefreshCw size={16} /> Refresh
+            <RefreshCw size={16} /> Refresh Preview
           </button>
           <button 
             onClick={handleExport}
@@ -136,28 +205,83 @@ const CodePreview: React.FC<CodePreviewProps> = ({ project }) => {
               onClick={() => setActiveTab('code')}
               className={`px-6 py-3 text-sm font-medium flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'code' ? 'border-blue-400 text-blue-400 bg-blue-400/5' : 'border-transparent text-slate-500 hover:text-slate-300'}`}
             >
-              <Code size={16} /> Source Code
+              <Code size={16} /> Editor
             </button>
           </div>
 
           {/* Content */}
-          <div className="flex-1 relative overflow-hidden">
+          <div className="flex-1 relative overflow-hidden bg-[#1e1e1e]">
             {activeTab === 'preview' ? (
-              <div className="w-full h-full bg-white">
-                <iframe 
-                  key={key}
-                  src={previewUrl} 
-                  className="w-full h-full border-none"
-                  title="App Preview"
-                  sandbox="allow-scripts allow-modals"
-                />
-              </div>
+              <>
+                <div className="w-full h-full relative bg-white">
+                  <iframe 
+                    key={key}
+                    src={previewUrl} 
+                    className="w-full h-full border-none"
+                    title="App Preview"
+                    sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
+                  />
+                  
+                  {/* Runtime Error Overlay */}
+                  {runtimeError && (
+                    <div className="absolute bottom-4 left-4 right-4 bg-red-950/95 border border-red-500/50 text-white p-4 rounded-xl shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-4 z-50">
+                      <div className="flex justify-between items-start">
+                        <div className="flex gap-3">
+                           <div className="bg-red-500/20 p-2 rounded-lg h-fit">
+                              <AlertTriangle className="text-red-400" size={24} />
+                           </div>
+                           <div>
+                              <h3 className="font-bold text-red-200">Runtime Error Detected</h3>
+                              <p className="font-mono text-sm text-red-300 mt-1 mb-2">{runtimeError.message}</p>
+                              {runtimeError.stack && (
+                                <details className="text-xs text-red-400/70 font-mono cursor-pointer mb-3">
+                                  <summary>View Stack Trace</summary>
+                                  <pre className="mt-2 p-2 bg-black/30 rounded overflow-x-auto">
+                                    {runtimeError.stack}
+                                  </pre>
+                                </details>
+                              )}
+                              
+                              {onFixError && (
+                                <button 
+                                  onClick={() => onFixError(runtimeError.message, runtimeError.stack)}
+                                  className="flex items-center gap-2 bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-lg shadow-red-900/50"
+                                >
+                                  <Wrench size={16} /> Auto-Fix with AI
+                                </button>
+                              )}
+                           </div>
+                        </div>
+                        <button 
+                          onClick={() => setRuntimeError(null)}
+                          className="text-red-400 hover:text-white"
+                        >
+                          <X size={20} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
             ) : (
-              <div className="w-full h-full overflow-auto custom-scrollbar">
+              <div className="w-full h-full">
                 {selectedFile ? (
-                   <pre className="p-6 text-sm font-mono text-slate-300 leading-relaxed">
-                     <code>{selectedFile.content}</code>
-                   </pre>
+                   <Editor
+                      height="100%"
+                      defaultLanguage={selectedFile.language === 'js' ? 'javascript' : selectedFile.language}
+                      language={selectedFile.language === 'js' ? 'javascript' : selectedFile.language}
+                      theme="vs-dark"
+                      value={selectedFile.content}
+                      onChange={handleEditorChange}
+                      options={{
+                        minimap: { enabled: false },
+                        fontSize: 14,
+                        padding: { top: 20 },
+                        scrollBeyondLastLine: false,
+                        automaticLayout: true,
+                        fontFamily: "'JetBrains Mono', monospace"
+                      }}
+                    />
                 ) : (
                   <div className="flex items-center justify-center h-full text-slate-600">Select a file</div>
                 )}

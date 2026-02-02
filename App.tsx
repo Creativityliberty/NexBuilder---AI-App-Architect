@@ -299,6 +299,56 @@ const App: React.FC = () => {
     }
   };
 
+  // Self-Healing Feature: Fix Runtime Errors
+  const handleAutoFixError = (errorMsg: string, stack: string) => {
+    if (!project) return;
+    
+    // 1. Identify dependencies (last completed tasks are good candidates)
+    const completedTasks = project.tasks.filter(t => t.status === 'completed');
+    const lastTask = completedTasks.length > 0 ? completedTasks[completedTasks.length - 1] : null;
+    const dependencies = lastTask ? [lastTask.id] : [];
+
+    // 2. Create the Fix Task
+    const fixTask: Task = {
+      id: crypto.randomUUID(),
+      title: `Fix Runtime Error: ${errorMsg.substring(0, 30)}...`,
+      description: `The application crashed in the preview.\n\nERROR MESSAGE:\n${errorMsg}\n\nSTACK TRACE:\n${stack}\n\nINSTRUCTIONS:\nAnalyze the existing code, find the bug causing this error, and provide the fixed file content.`,
+      agentRole: 'developer',
+      status: 'pending',
+      dependencies: dependencies
+    };
+
+    setProject(prev => {
+        if (!prev) return null;
+        const logEntry: ActivityLogEntry = {
+            id: crypto.randomUUID(),
+            taskId: fixTask.id,
+            taskTitle: fixTask.title,
+            timestamp: Date.now(),
+            status: 'split', // Using split as 'created'
+            details: 'Self-Healing Agent created a fix task for runtime error.'
+        };
+        return {
+            ...prev,
+            tasks: [...prev.tasks, fixTask],
+            activityLog: [...(prev.activityLog || []), logEntry]
+        };
+    });
+
+    // 3. Navigate to Builder to execute it
+    setCurrentView('builder');
+  };
+
+  const handleFileUpdate = (path: string, newContent: string) => {
+    setProject(prev => {
+        if (!prev) return null;
+        const updatedFiles = prev.files.map(f => 
+            f.path === path ? { ...f, content: newContent } : f
+        );
+        return { ...prev, files: updatedFiles };
+    });
+  };
+
   const renderContent = () => {
     if (currentView === 'settings') {
       return <SettingsModal config={config} onSave={handleSaveConfig} />;
@@ -450,7 +500,13 @@ const App: React.FC = () => {
             </div>
           );
         case 'preview':
-          return <CodePreview project={project} />;
+          return (
+             <CodePreview 
+               project={project} 
+               onFixError={handleAutoFixError} 
+               onUpdateFile={handleFileUpdate}
+             />
+          );
         case 'history':
           return <HistoryView project={project} />;
         default: 
