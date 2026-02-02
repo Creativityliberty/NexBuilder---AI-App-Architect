@@ -1,6 +1,6 @@
 import React from 'react';
 import { Project, ActivityLogEntry } from '../types';
-import { History, CheckCircle, XCircle, PlayCircle, Clock, Scissors } from 'lucide-react';
+import { History, CheckCircle, XCircle, PlayCircle, Clock, Scissors, Download } from 'lucide-react';
 
 interface HistoryViewProps {
   project: Project;
@@ -34,14 +34,46 @@ const HistoryView: React.FC<HistoryViewProps> = ({ project }) => {
     }
   };
 
+  const handleExport = () => {
+    try {
+        const data = JSON.stringify(project.activityLog, null, 2);
+        const blob = new Blob([data], { type: 'application/json' });
+        const fileName = `${project.name.toLowerCase().replace(/\s+/g, '-')}-memory.json`;
+        
+        if ((window as any).saveAs) {
+            (window as any).saveAs(blob, fileName);
+        } else {
+            // Fallback if FileSaver is not loaded
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    } catch (e) {
+        console.error("Failed to export history", e);
+        alert("Failed to export history");
+    }
+  };
+
   return (
     <div className="h-full flex flex-col p-6 animate-in fade-in">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-bold flex items-center gap-3">
           <History className="text-orange-400" /> Execution History
         </h2>
-        <div className="text-sm text-slate-500 font-mono">
-           {sortedLog.length} Events Recorded
+        <div className="flex items-center gap-4">
+            <span className="text-sm text-slate-500 font-mono hidden sm:inline-block">
+            {sortedLog.length} Events Recorded
+            </span>
+            <button 
+                onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg transition-colors text-xs font-bold uppercase tracking-wider shadow-lg"
+                title="Export history as JSON for AI memory"
+            >
+                <Download size={14} /> Export Memory
+            </button>
         </div>
       </div>
 
