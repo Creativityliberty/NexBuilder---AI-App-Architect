@@ -1,0 +1,5 @@
+{
+  "name": "NexBuilder - AI App Architect",
+  "description": "A high-fidelity App Builder agent that plans, architects, and executes projects using a DAG (Directed Acyclic Graph) workflow system. Supports Google Gemini and OpenRouter.",
+  "requestFramePermissions": []
+}
