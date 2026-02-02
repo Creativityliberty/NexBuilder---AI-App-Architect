@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig, Task, ProjectFile } from "../types";
 
-// Helper to get config safely
+// Helper to get config safely (still needed for OpenRouter)
 const getApiKey = (config: AppConfig): string => {
   if (config.provider === 'google') return process.env.API_KEY || '';
   return config.openRouterKey;
@@ -67,9 +67,10 @@ export const generateProjectPlan = async (
   const fullPrompt = `${systemPrompt}\n\nUser Request: ${prompt}`;
 
   if (config.provider === 'google') {
-    const ai = new GoogleGenAI({ apiKey: getApiKey(config) });
+    // Must use process.env.API_KEY directly as per guidelines
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3-pro-preview', // Upgraded to Pro for complex planning tasks
       contents: fullPrompt,
       config: { responseMimeType: "application/json" }
     });
@@ -100,6 +101,71 @@ export const generateProjectPlan = async (
   }
 };
 
+export const decomposeTask = async (
+  task: Task,
+  config: AppConfig
+): Promise<Task[]> => {
+  const systemPrompt = `
+    You are a Senior Technical Lead.
+    A developer needs this task broken down into 2-4 smaller, sequential sub-tasks.
+    
+    Current Task: ${task.title}
+    Description: ${task.description}
+    
+    Output JSON array of objects (NO wrapping object, just the array):
+    [
+      {
+        "title": "Subtask 1",
+        "description": "...",
+        "agentRole": "developer"
+      },
+      ...
+    ]
+    
+    Rules:
+    1. Keep it sequential.
+    2. Be specific.
+  `;
+
+  let text = "";
+
+  if (config.provider === 'google') {
+    // Must use process.env.API_KEY directly as per guidelines
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview', // Flash is usually sufficient for simple decomposition, but can upgrade if needed
+      contents: systemPrompt,
+      config: { responseMimeType: "application/json" }
+    });
+    text = response.text || "[]";
+  } else {
+     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${config.openRouterKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": window.location.origin,
+        "X-Title": "NexBuilder"
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [{ role: "user", content: systemPrompt }]
+      })
+    });
+    const data = await response.json();
+    text = data.choices?.[0]?.message?.content || "[]";
+    text = text.replace(/```json/g, '').replace(/```/g, '');
+  }
+  
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : parsed.tasks || [];
+  } catch (e) {
+    console.error("Failed to parse decomposition", e);
+    return [];
+  }
+};
+
 export const executeTask = async (
   task: Task, 
   context: string, 
@@ -125,9 +191,10 @@ export const executeTask = async (
   `;
 
   if (config.provider === 'google') {
-    const ai = new GoogleGenAI({ apiKey: getApiKey(config) });
+    // Must use process.env.API_KEY directly as per guidelines
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3-pro-preview', // Upgraded to Pro for coding tasks
       contents: systemPrompt,
     });
     return response.text || "";

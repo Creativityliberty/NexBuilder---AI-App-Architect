@@ -5,8 +5,8 @@ import DAGVisualizer from './components/DAGVisualizer';
 import BuilderBoard from './components/BuilderBoard';
 import CodePreview from './components/CodePreview';
 import { ViewMode, AppConfig, Project, Task } from './types';
-import { generateProjectPlan, executeTask, extractFilesFromOutput } from './services/aiService';
-import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge, Trash2, History, Save } from 'lucide-react';
+import { generateProjectPlan, executeTask, extractFilesFromOutput, decomposeTask } from './services/aiService';
+import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge, Trash2, History, Save, Scissors } from 'lucide-react';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewMode>('home');
@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [project, setProject] = useState<Project | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isSplitting, setIsSplitting] = useState(false);
   const [lastSaved, setLastSaved] = useState<number>(Date.now());
 
   // Initialization: Load config and state from local storage
@@ -99,6 +100,84 @@ const App: React.FC = () => {
         localStorage.removeItem('nexbuilder_project');
         localStorage.removeItem('nexbuilder_idea');
         setCurrentView('home');
+    }
+  };
+
+  const handleEditTask = (task: Task, newTitle: string, newDesc: string) => {
+    setProject(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        tasks: prev.tasks.map(t => 
+          t.id === task.id ? { ...t, title: newTitle, description: newDesc } : t
+        )
+      };
+    });
+  };
+
+  const handleSplitTask = async (task: Task) => {
+    if (!project) return;
+    setIsSplitting(true);
+    
+    try {
+      // 1. Ask AI to break it down
+      const subTasksRaw = await decomposeTask(task, config);
+      
+      if (subTasksRaw.length === 0) {
+        alert("Could not break down this task.");
+        return;
+      }
+
+      setProject(prev => {
+        if (!prev) return null;
+        
+        // 2. Prepare new tasks with IDs and Dependencies
+        const newTasks: Task[] = [];
+        let previousId: string | null = null;
+        
+        // The first subtask inherits the original task's dependencies
+        // Subsequent subtasks depend on the previous subtask
+        
+        subTasksRaw.forEach((st, index) => {
+          const newId = crypto.randomUUID();
+          const newTask: Task = {
+            id: newId,
+            title: st.title,
+            description: st.description,
+            agentRole: st.agentRole || 'developer',
+            status: 'pending',
+            dependencies: index === 0 ? task.dependencies : [previousId!]
+          };
+          newTasks.push(newTask);
+          previousId = newId;
+        });
+
+        const lastNewTaskId = newTasks[newTasks.length - 1].id;
+
+        // 3. Rewire the DAG
+        // Any task that depended on the ORIGINAL task must now depend on the LAST new task
+        const updatedTasks = prev.tasks.filter(t => t.id !== task.id).map(t => {
+          if (t.dependencies.includes(task.id)) {
+            return {
+              ...t,
+              dependencies: t.dependencies.map(d => d === task.id ? lastNewTaskId : d)
+            };
+          }
+          return t;
+        });
+
+        // 4. Insert new tasks
+        // We put them roughly where the old one was to keep order sane-ish
+        return {
+          ...prev,
+          tasks: [...updatedTasks, ...newTasks]
+        };
+      });
+
+    } catch (e) {
+      alert("Error splitting task: " + (e as Error).message);
+    } finally {
+      setIsSplitting(false);
     }
   };
 
@@ -285,17 +364,27 @@ const App: React.FC = () => {
                 <h2 className="text-2xl font-bold flex items-center gap-3">
                   <Activity className="text-emerald-400" /> Construction Zone
                 </h2>
-                {isExecuting && (
-                  <div className="flex items-center gap-2 text-blue-400 text-sm bg-blue-500/10 px-3 py-1 rounded-full animate-pulse">
-                    <Terminal size={14} /> Agent is working...
-                  </div>
-                )}
+                <div className="flex items-center gap-4">
+                  {isSplitting && (
+                    <div className="flex items-center gap-2 text-purple-400 text-sm bg-purple-500/10 px-3 py-1 rounded-full animate-pulse">
+                      <Scissors size={14} /> Splitting Task...
+                    </div>
+                  )}
+                  {isExecuting && (
+                    <div className="flex items-center gap-2 text-blue-400 text-sm bg-blue-500/10 px-3 py-1 rounded-full animate-pulse">
+                      <Terminal size={14} /> Agent is working...
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="flex-1 min-h-0">
                 <BuilderBoard 
                   tasks={project.tasks} 
                   onExecute={handleExecuteTask} 
+                  onSplit={handleSplitTask}
+                  onEdit={handleEditTask}
                   isExecuting={isExecuting}
+                  isSplitting={isSplitting}
                 />
               </div>
             </div>
