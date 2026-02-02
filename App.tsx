@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import DAGVisualizer from './components/DAGVisualizer';
@@ -7,7 +7,33 @@ import CodePreview from './components/CodePreview';
 import HistoryView from './components/HistoryView';
 import { ViewMode, AppConfig, Project, Task, ActivityLogEntry } from './types';
 import { generateProjectPlan, executeTask, extractFilesFromOutput, decomposeTask } from './services/aiService';
-import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge, Trash2, History, Save, Scissors, AlertTriangle } from 'lucide-react';
+import { saveProject, loadProject, saveConfig, loadConfig, saveIdea, loadIdea, clearProject } from './services/storageService';
+import { 
+  Sparkles, Terminal, ArrowRight, Activity, GitMerge, Trash2, 
+  History, Save, Scissors, AlertTriangle, Layout, BarChart3, Kanban, 
+  Paperclip, Mic, FileText, Image, X
+} from 'lucide-react';
+
+const TEMPLATES = [
+  {
+    title: "SaaS Landing Page",
+    description: "Modern high-converting landing page with Hero, Features, Pricing, and Testimonials.",
+    icon: Layout,
+    prompt: "Create a modern, responsive SaaS landing page for an AI analytics tool. Include a glassmorphism Hero section with a call-to-action, a 3-column Feature grid using Lucide icons, a Pricing table with monthly/yearly toggle, and a footer. Use a dark theme with blue/purple gradients and Inter font."
+  },
+  {
+    title: "Admin Dashboard",
+    description: "Data-dense dashboard with sidebar navigation, stats cards, and charts.",
+    icon: BarChart3,
+    prompt: "Build a responsive Admin Dashboard with a collapsible sidebar navigation. The main content should have a 'Stats Overview' row (Users, Revenue, Bounce Rate), followed by a data table showing recent transactions with status badges. Include a placeholder for a line chart using CSS or SVG."
+  },
+  {
+    title: "Kanban Board",
+    description: "Trello-style task management with drag-and-drop capabilities.",
+    icon: Kanban,
+    prompt: "Create a functional Kanban board application. It should have 3 columns: 'To Do', 'In Progress', 'Done'. Allow users to add new cards to 'To Do', delete cards, and move them between columns. Persist the state using local storage inside the generated app."
+  }
+];
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewMode>('home');
@@ -24,89 +50,142 @@ const App: React.FC = () => {
   const [isSplitting, setIsSplitting] = useState(false);
   const [lastSaved, setLastSaved] = useState<number>(Date.now());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isLoadingStorage, setIsLoadingStorage] = useState(true);
+  
+  // Attachments
+  const [attachments, setAttachments] = useState<{name: string, content: string, type: 'text' | 'image'}[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialization: Load config and state from local storage
+  // Initialization: Load config and state from IndexedDB
   useEffect(() => {
-    // 1. Config
-    const savedConfig = localStorage.getItem('nexbuilder_config');
-    if (savedConfig) setConfig(JSON.parse(savedConfig));
-
-    // 2. Project Idea Input
-    const savedIdea = localStorage.getItem('nexbuilder_idea');
-    if (savedIdea) setProjectIdea(savedIdea);
-
-    // 3. Full Project State
-    const savedProject = localStorage.getItem('nexbuilder_project');
-    if (savedProject) {
+    const init = async () => {
         try {
-            const loadedProject: Project = JSON.parse(savedProject);
-            
-            // CRASH RECOVERY
-            loadedProject.tasks = loadedProject.tasks.map(t => 
-                t.status === 'in_progress' ? { ...t, status: 'pending' } : t
-            );
+            const savedConfig = await loadConfig();
+            if (savedConfig) setConfig(savedConfig);
 
-            if (!loadedProject.activityLog) loadedProject.activityLog = [];
+            const savedIdea = await loadIdea();
+            if (savedIdea) setProjectIdea(savedIdea);
 
-            setProject(loadedProject);
+            const savedProject = await loadProject();
+            if (savedProject) {
+                // CRASH RECOVERY
+                savedProject.tasks = savedProject.tasks.map(t => 
+                    t.status === 'in_progress' ? { ...t, status: 'pending' } : t
+                );
+                if (!savedProject.activityLog) savedProject.activityLog = [];
+                if (!savedProject.packages) savedProject.packages = [];
+                setProject(savedProject);
+            }
         } catch (e) {
-            console.error("Failed to load saved project", e);
+            console.error("Failed to load storage", e);
+        } finally {
+            setIsLoadingStorage(false);
         }
-    }
+    };
+    init();
   }, []);
 
   const handleSaveConfig = (newConfig: AppConfig) => {
     setConfig(newConfig);
-    localStorage.setItem('nexbuilder_config', JSON.stringify(newConfig));
+    saveConfig(newConfig);
     setCurrentView('home');
   };
 
-  // Auto-Save Effect
   useEffect(() => {
-    localStorage.setItem('nexbuilder_idea', projectIdea);
-    if (project) {
-        localStorage.setItem('nexbuilder_project', JSON.stringify(project));
-        setLastSaved(Date.now());
+    if (!isLoadingStorage) {
+        saveIdea(projectIdea);
+        if (project) {
+            saveProject(project);
+            setLastSaved(Date.now());
+        }
     }
-  }, [project, projectIdea]);
+  }, [project, projectIdea, isLoadingStorage]);
 
-  const handleCreateProject = async () => {
-    if (!projectIdea) return;
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    Array.from(files).forEach((file: File) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const content = event.target?.result as string;
+            if (file.type.startsWith('image/')) {
+                // Keep base64 for images (but truncate for display?)
+                setAttachments(prev => [...prev, { name: file.name, content: content, type: 'image' }]);
+            } else {
+                setAttachments(prev => [...prev, { name: file.name, content: content, type: 'text' }]);
+            }
+        };
+        if (file.type.startsWith('image/')) {
+            reader.readAsDataURL(file);
+        } else {
+            reader.readAsText(file);
+        }
+    });
+  };
+
+  const removeAttachment = (idx: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleCreateProject = async (overrideIdea?: string) => {
+    const ideaToUse = overrideIdea || projectIdea;
+    if (!ideaToUse) return;
+    
+    if (overrideIdea) setProjectIdea(overrideIdea);
+
     setIsGenerating(true);
     setErrorMsg(null);
     try {
-      const plan = await generateProjectPlan(projectIdea, config);
+      // Construct full context with files
+      let fullPrompt = ideaToUse;
+      if (attachments.length > 0) {
+        fullPrompt += "\n\nATTACHED CONTEXT FILES:";
+        attachments.forEach(att => {
+            if (att.type === 'text') {
+                fullPrompt += `\n\n--- FILE: ${att.name} ---\n${att.content}\n--- END FILE ---\n`;
+            } else {
+                fullPrompt += `\n\n[Image Attachment: ${att.name} included]`;
+                // In a real multimodal implementation, we would pass the base64 separately to the model contents array
+                // For this simplified text-based prompt function, we assume the user describes the image or we use a model that supports inline text context.
+                // However, gemini-flash supports images. Ideally generateProjectPlan should accept an array of parts.
+                // For now, we append text context.
+            }
+        });
+      }
+
+      const plan = await generateProjectPlan(fullPrompt, config);
       
       if (plan.tasks.length === 0) {
-        throw new Error("The AI returned an empty plan. Please try again with a more detailed description.");
+        throw new Error("The AI returned an empty plan.");
       }
 
       const newProject: Project = {
         id: crypto.randomUUID(),
         name: plan.name || 'New Project',
-        description: projectIdea,
+        description: ideaToUse,
         tasks: plan.tasks.map(t => ({ ...t, status: 'pending' })),
         files: [],
+        packages: plan.packages || [],
         activityLog: [],
         createdAt: Date.now()
       };
       setProject(newProject);
       setCurrentView('planner');
+      setAttachments([]); // Clear attachments after creation
     } catch (e) {
       console.error(e);
       setErrorMsg((e as Error).message);
-      // Don't switch view if failed
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const handleResetProject = () => {
+  const handleResetProject = async () => {
     if (confirm("Are you sure you want to delete this project? This cannot be undone.")) {
         setProject(null);
         setProjectIdea('');
-        localStorage.removeItem('nexbuilder_project');
-        localStorage.removeItem('nexbuilder_idea');
+        await clearProject();
         setCurrentView('home');
     }
   };
@@ -120,6 +199,21 @@ const App: React.FC = () => {
           t.id === task.id ? { ...t, title: newTitle, description: newDesc } : t
         )
       };
+    });
+  };
+
+  const handleAddPackage = (pkg: string) => {
+    setProject(prev => {
+        if (!prev) return null;
+        if (prev.packages.includes(pkg)) return prev;
+        return { ...prev, packages: [...prev.packages, pkg] };
+    });
+  };
+
+  const handleRemovePackage = (pkg: string) => {
+    setProject(prev => {
+        if (!prev) return null;
+        return { ...prev, packages: prev.packages.filter(p => p !== pkg) };
     });
   };
 
@@ -143,9 +237,7 @@ const App: React.FC = () => {
     try {
       const subTasksRaw = await decomposeTask(task, config);
       
-      if (subTasksRaw.length === 0) {
-        throw new Error("AI returned no subtasks.");
-      }
+      if (subTasksRaw.length === 0) throw new Error("AI returned no subtasks.");
 
       setProject(prev => {
         if (!prev) return null;
@@ -238,7 +330,7 @@ const App: React.FC = () => {
         ? `\nExisting Files:\n${project.files.map(f => `- ${f.path}`).join('\n')}` 
         : '';
 
-      const output = await executeTask(task, context + fileContext, config);
+      const output = await executeTask(task, context + fileContext, project.packages, config);
       const newFiles = extractFilesFromOutput(output);
 
       setProject(prev => {
@@ -275,7 +367,6 @@ const App: React.FC = () => {
     } catch (e) {
       setProject(prev => {
         if (!prev) return null;
-        
         const failLog: ActivityLogEntry = {
             id: crypto.randomUUID(),
             taskId: task.id,
@@ -284,7 +375,6 @@ const App: React.FC = () => {
             status: 'failed',
             details: (e as Error).message
         };
-
         return {
           ...prev,
           tasks: prev.tasks.map(t => 
@@ -299,16 +389,12 @@ const App: React.FC = () => {
     }
   };
 
-  // Self-Healing Feature: Fix Runtime Errors
   const handleAutoFixError = (errorMsg: string, stack: string) => {
     if (!project) return;
-    
-    // 1. Identify dependencies (last completed tasks are good candidates)
     const completedTasks = project.tasks.filter(t => t.status === 'completed');
     const lastTask = completedTasks.length > 0 ? completedTasks[completedTasks.length - 1] : null;
     const dependencies = lastTask ? [lastTask.id] : [];
 
-    // 2. Create the Fix Task
     const fixTask: Task = {
       id: crypto.randomUUID(),
       title: `Fix Runtime Error: ${errorMsg.substring(0, 30)}...`,
@@ -325,7 +411,7 @@ const App: React.FC = () => {
             taskId: fixTask.id,
             taskTitle: fixTask.title,
             timestamp: Date.now(),
-            status: 'split', // Using split as 'created'
+            status: 'split',
             details: 'Self-Healing Agent created a fix task for runtime error.'
         };
         return {
@@ -334,8 +420,6 @@ const App: React.FC = () => {
             activityLog: [...(prev.activityLog || []), logEntry]
         };
     });
-
-    // 3. Navigate to Builder to execute it
     setCurrentView('builder');
   };
 
@@ -350,61 +434,122 @@ const App: React.FC = () => {
   };
 
   const renderContent = () => {
+    if (isLoadingStorage) {
+        return (
+            <div className="flex items-center justify-center h-screen text-slate-500">
+                <div className="animate-pulse flex flex-col items-center gap-4">
+                    <div className="w-12 h-12 rounded-full border-4 border-slate-700 border-t-blue-500 animate-spin"></div>
+                    <p>Loading Workspace...</p>
+                </div>
+            </div>
+        );
+    }
+
     if (currentView === 'settings') {
       return <SettingsModal config={config} onSave={handleSaveConfig} />;
     }
 
     if (!project && currentView !== 'settings') {
       return (
-        <div className="max-w-3xl mx-auto mt-20 text-center animate-in fade-in duration-700">
+        <div className="max-w-4xl mx-auto mt-12 text-center animate-in fade-in duration-700 px-6 pb-20">
           <div className="inline-block p-4 rounded-full bg-blue-500/10 mb-6 border border-blue-500/20 shadow-[0_0_30px_rgba(59,130,246,0.2)]">
             <Sparkles size={40} className="text-blue-400" />
           </div>
           <h1 className="text-5xl font-bold text-white mb-6 tracking-tight">
             What shall we build today?
           </h1>
-          <p className="text-slate-400 text-lg mb-10 max-w-lg mx-auto leading-relaxed">
-            Describe your application idea. The architect agent will decompose it into a task graph and execute it step-by-step.
+          <p className="text-slate-400 text-lg mb-8 max-w-lg mx-auto leading-relaxed">
+            Describe your application idea, or choose a template.
           </p>
           
-          <div className="relative group max-w-xl mx-auto mb-6">
+          <div className="relative group max-w-2xl mx-auto mb-12 text-left">
             <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-500 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-1000 group-hover:duration-200"></div>
-            <div className="relative flex bg-slate-900 rounded-2xl p-2 border border-slate-700 shadow-2xl">
-              <input 
-                type="text" 
+            <div className="relative flex flex-col bg-slate-900 rounded-2xl p-4 border border-slate-700 shadow-2xl">
+              <textarea 
                 value={projectIdea}
                 onChange={(e) => setProjectIdea(e.target.value)}
                 placeholder="e.g. A React Kanban board with drag and drop..."
-                className="flex-1 bg-transparent border-none outline-none text-white px-4 text-lg placeholder-slate-600"
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()}
+                className="w-full h-32 bg-transparent border-none outline-none text-white text-lg placeholder-slate-600 resize-none font-sans leading-relaxed"
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleCreateProject();
+                    }
+                }}
               />
-              <button 
-                onClick={handleCreateProject}
-                disabled={isGenerating || !projectIdea}
-                className="bg-blue-600 hover:bg-blue-500 text-white rounded-xl px-6 py-3 font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {isGenerating ? (
-                  <>Initializing...</>
-                ) : (
-                  <>Create <ArrowRight size={18} /></>
-                )}
-              </button>
+              
+              {/* Attachments Preview */}
+              {attachments.length > 0 && (
+                <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+                    {attachments.map((att, i) => (
+                        <div key={i} className="flex items-center gap-2 bg-slate-800 rounded-lg p-2 text-xs border border-slate-700 shrink-0">
+                            {att.type === 'image' ? <Image size={12} className="text-purple-400" /> : <FileText size={12} className="text-blue-400" />}
+                            <span className="truncate max-w-[100px]">{att.name}</span>
+                            <button onClick={() => removeAttachment(i)} className="hover:text-red-400"><X size={12}/></button>
+                        </div>
+                    ))}
+                </div>
+              )}
+
+              <div className="flex justify-between items-center pt-2 border-t border-slate-800">
+                <div className="flex gap-2">
+                     <input type="file" ref={fileInputRef} className="hidden" multiple onChange={handleFileUpload} />
+                     <button 
+                        onClick={() => fileInputRef.current?.click()}
+                        className="p-2 hover:bg-slate-800 rounded-lg text-slate-500 hover:text-blue-400 transition-colors tooltip"
+                        title="Attach files or images"
+                     >
+                        <Paperclip size={20} />
+                     </button>
+                     <button 
+                         className="p-2 hover:bg-slate-800 rounded-lg text-slate-500 hover:text-purple-400 transition-colors"
+                         title="Voice Input (Coming Soon)"
+                     >
+                        <Mic size={20} />
+                     </button>
+                </div>
+
+                <button 
+                    onClick={() => handleCreateProject()}
+                    disabled={isGenerating || !projectIdea}
+                    className="bg-blue-600 hover:bg-blue-500 text-white rounded-xl px-6 py-2.5 font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                    {isGenerating ? (
+                    <>Initializing...</>
+                    ) : (
+                    <>Create <ArrowRight size={18} /></>
+                    )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Project Templates */}
+          <div className="max-w-4xl mx-auto">
+            <h3 className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-6">Or Start with a Template</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {TEMPLATES.map((template, idx) => (
+                    <button 
+                        key={idx}
+                        onClick={() => handleCreateProject(template.prompt)}
+                        className="bg-slate-800/50 hover:bg-slate-800 border border-slate-700 hover:border-blue-500/50 rounded-2xl p-6 text-left transition-all hover:-translate-y-1 group"
+                    >
+                        <div className="w-12 h-12 rounded-xl bg-slate-900 flex items-center justify-center mb-4 group-hover:bg-blue-500/10 group-hover:text-blue-400 transition-colors">
+                            <template.icon size={24} className="text-slate-400 group-hover:text-blue-400" />
+                        </div>
+                        <h4 className="text-lg font-bold text-slate-200 mb-2">{template.title}</h4>
+                        <p className="text-xs text-slate-400 leading-relaxed">{template.description}</p>
+                    </button>
+                ))}
             </div>
           </div>
 
           {errorMsg && (
-            <div className="max-w-xl mx-auto bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-xl flex items-center gap-3 animate-in slide-in-from-bottom-2">
+            <div className="max-w-xl mx-auto mt-8 bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-xl flex items-center gap-3 animate-in slide-in-from-bottom-2">
                <AlertTriangle size={20} />
                <div className="text-sm font-medium">{errorMsg}</div>
                <button onClick={() => setErrorMsg(null)} className="ml-auto hover:text-white"><Trash2 size={14}/></button>
             </div>
-          )}
-
-          {/* Recovery hint if idea was loaded */}
-          {projectIdea && !project && !errorMsg && (
-             <div className="mt-4 flex items-center justify-center gap-2 text-slate-500 text-sm">
-                <History size={14} /> Draft loaded from local storage
-             </div>
           )}
         </div>
       );
@@ -490,9 +635,13 @@ const App: React.FC = () => {
               <div className="flex-1 min-h-0">
                 <BuilderBoard 
                   tasks={project.tasks} 
+                  packages={project.packages}
+                  config={config}
                   onExecute={handleExecuteTask} 
                   onSplit={handleSplitTask}
                   onEdit={handleEditTask}
+                  onAddPackage={handleAddPackage}
+                  onRemovePackage={handleRemovePackage}
                   isExecuting={isExecuting}
                   isSplitting={isSplitting}
                 />

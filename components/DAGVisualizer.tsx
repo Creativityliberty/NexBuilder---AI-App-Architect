@@ -1,6 +1,7 @@
+
 import React, { useEffect, useState, useRef } from 'react';
 import { Task } from '../types';
-import { Info, GitCommit, User, CheckCircle, Clock, AlertTriangle } from 'lucide-react';
+import { Info, GitCommit, User, CheckCircle, Clock, Layout } from 'lucide-react';
 
 interface DAGVisualizerProps {
   tasks: Task[];
@@ -11,47 +12,42 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
   const containerRef = useRef<HTMLDivElement>(null);
   const [svgContent, setSvgContent] = useState<string>('');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [direction, setDirection] = useState<'LR' | 'TD'>('LR');
 
   useEffect(() => {
     if (tasks.length === 0) return;
 
     const generateMermaid = async () => {
-      // Switch to Left-Right graph for better timeline visualization
-      let definition = 'graph LR\n';
+      let definition = `graph ${direction}\n`;
       
       // Cyberpunk/Modern Theme Definitions
-      definition += '%%{init: {\'theme\': \'base\', \'themeVariables\': { \'primaryColor\': \'#1e293b\', \'primaryTextColor\': \'#f8fafc\', \'primaryBorderColor\': \'#475569\', \'lineColor\': \'#64748b\', \'secondaryColor\': \'#0f172a\', \'tertiaryColor\': \'#1e1e1e\'}}}%%\n';
+      // High contrast styles for accessibility ("tout pisuse se voiir")
+      definition += '%%{init: {\'theme\': \'base\', \'themeVariables\': { \'primaryColor\': \'#1e293b\', \'primaryTextColor\': \'#f1f5f9\', \'primaryBorderColor\': \'#94a3b8\', \'lineColor\': \'#cbd5e1\', \'secondaryColor\': \'#0f172a\', \'tertiaryColor\': \'#1e1e1e\'}}}%%\n';
 
-      // Advanced Class Definitions
-      definition += 'classDef pending fill:#0f172a,stroke:#334155,stroke-width:1px,color:#94a3b8,rx:5,ry:5;\n';
-      definition += 'classDef in_progress fill:#172554,stroke:#3b82f6,stroke-width:2px,color:#93c5fd,stroke-dasharray: 5 5,rx:5,ry:5;\n';
-      definition += 'classDef completed fill:#022c22,stroke:#10b981,stroke-width:2px,color:#6ee7b7,rx:5,ry:5;\n';
-      definition += 'classDef blocked fill:#450a0a,stroke:#ef4444,stroke-width:2px,color:#fca5a5,rx:5,ry:5;\n';
+      definition += 'classDef pending fill:#1e293b,stroke:#64748b,stroke-width:2px,color:#f8fafc,rx:5,ry:5;\n';
+      definition += 'classDef in_progress fill:#1e3a8a,stroke:#60a5fa,stroke-width:3px,color:#eff6ff,stroke-dasharray: 5 5,rx:5,ry:5;\n';
+      definition += 'classDef completed fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#ecfdf5,rx:5,ry:5;\n';
+      definition += 'classDef blocked fill:#450a0a,stroke:#f87171,stroke-width:2px,color:#fef2f2,rx:5,ry:5;\n';
       
-      // Agent Role Specific Styles (Applied via ID suffix hacks or just stick to status for now, lets use status for clarity)
-
       tasks.forEach(task => {
-        // Clean ID for mermaid
         const cleanId = task.id.replace(/[^a-zA-Z0-9]/g, '_');
         
-        // Add Icons or formatting to label based on Role
         let roleIcon = "🔧";
         if (task.agentRole === 'architect') roleIcon = "📐";
         if (task.agentRole === 'reviewer') roleIcon = "👁️";
         
-        let label = `"${roleIcon} ${task.title}"`;
+        // Truncate title for graph readability
+        const safeTitle = task.title.length > 20 ? task.title.substring(0, 18) + '..' : task.title;
+        let label = `"${roleIcon} ${safeTitle}"`;
         
-        // Add status class
         let className = 'pending';
         if (task.status === 'in_progress') className = 'in_progress';
         if (task.status === 'completed') className = 'completed';
         if (task.status === 'blocked') className = 'blocked';
 
-        // Add Click Interaction via Clickable Class
         definition += `${cleanId}[${label}]:::${className}\n`;
         definition += `click ${cleanId} call window.handleTaskClick('${task.id}')\n`;
 
-        // Dependencies
         task.dependencies.forEach(depId => {
           const cleanDepId = depId.replace(/[^a-zA-Z0-9]/g, '_');
           if (tasks.find(t => t.id === depId)) {
@@ -70,9 +66,8 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
     };
 
     generateMermaid();
-  }, [tasks, activeTaskId]);
+  }, [tasks, activeTaskId, direction]);
 
-  // Global handler for Mermaid clicks
   useEffect(() => {
     (window as any).handleTaskClick = (taskId: string) => {
       const task = tasks.find(t => t.id === taskId);
@@ -86,9 +81,18 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
   return (
     <div className="flex h-full gap-4">
       {/* Graph Area */}
-      <div className="flex-1 glass-panel rounded-3xl p-6 min-h-[400px] flex items-center justify-center bg-slate-900/50 overflow-hidden relative">
-        <div className="absolute top-4 left-4 z-10 bg-slate-900/80 backdrop-blur px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-400 font-mono">
-            Graph Mode: LR (Timeline)
+      <div className="flex-1 glass-panel rounded-3xl p-6 min-h-[400px] flex items-center justify-center bg-slate-900/50 overflow-hidden relative border border-slate-700">
+        <div className="absolute top-4 left-4 z-10 flex gap-2">
+            <div className="bg-slate-900/80 backdrop-blur px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-400 font-mono flex items-center gap-2">
+                <Layout size={12} />
+                Mode: {direction === 'LR' ? 'Timeline' : 'Hierarchy'}
+            </div>
+            <button 
+                onClick={() => setDirection(prev => prev === 'LR' ? 'TD' : 'LR')}
+                className="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg text-xs text-white border border-slate-600 transition-colors"
+            >
+                Switch Layout
+            </button>
         </div>
         
         {tasks.length === 0 ? (
@@ -98,11 +102,8 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
         ) : (
           <div 
             ref={containerRef}
-            className="w-full h-full overflow-auto flex items-center justify-center cursor-move active:cursor-grabbing"
+            className="w-full h-full overflow-auto flex items-center justify-center cursor-move"
             dangerouslySetInnerHTML={{ __html: svgContent }} 
-            onClick={(e) => {
-                // Basic pan logic could go here, or just rely on overflow-auto
-            }}
           />
         )}
       </div>
@@ -118,11 +119,6 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
         <div className="flex-1 overflow-y-auto p-5">
             {selectedTask ? (
                 <div className="space-y-6 animate-in slide-in-from-right-4">
-                    <div>
-                        <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1">Task ID</div>
-                        <div className="font-mono text-xs text-slate-600 break-all">{selectedTask.id}</div>
-                    </div>
-
                     <div>
                         <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-2">Title</div>
                         <h4 className="text-lg font-bold text-white leading-tight">{selectedTask.title}</h4>
@@ -152,7 +148,7 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
 
                     <div>
                         <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-2">Description</div>
-                        <p className="text-sm text-slate-300 leading-relaxed bg-slate-800/30 p-3 rounded-lg border border-slate-800">
+                        <p className="text-sm text-slate-300 leading-relaxed bg-slate-800/30 p-3 rounded-lg border border-slate-800 max-h-40 overflow-y-auto custom-scrollbar">
                             {selectedTask.description}
                         </p>
                     </div>
@@ -182,7 +178,7 @@ const DAGVisualizer: React.FC<DAGVisualizerProps> = ({ tasks, activeTaskId }) =>
                     <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center">
                         <GitCommit size={32} />
                     </div>
-                    <p className="text-sm max-w-[200px]">Click on a node in the graph to view its details.</p>
+                    <p className="text-sm max-w-[200px]">Click on a node to view details.</p>
                 </div>
             )}
         </div>

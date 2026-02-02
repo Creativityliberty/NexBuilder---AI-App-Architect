@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig, Task, ProjectFile } from "../types";
 
@@ -66,190 +67,15 @@ const getGoogleClient = (config: AppConfig) => {
     return new GoogleGenAI({ apiKey });
 };
 
-export const generateProjectPlan = async (
-  prompt: string, 
-  config: AppConfig
-): Promise<{ name: string; tasks: Task[] }> => {
-  
-  validateConfig(config);
-
-  const systemPrompt = `
-    You are an expert Technical Architect and Project Manager.
-    Your goal is to break down a user's app idea into a directed acyclic graph (DAG) of executable tasks.
+const callAI = async (systemPrompt: string, userPrompt: string, config: AppConfig, jsonMode = false): Promise<string> => {
+    validateConfig(config);
     
-    Output MUST be valid JSON with the following structure:
-    {
-      "name": "Project Name",
-      "tasks": [
-        {
-          "id": "unique_string_id",
-          "title": "Task Title",
-          "description": "Detailed instruction for the AI developer.",
-          "agentRole": "architect" | "developer" | "reviewer",
-          "dependencies": ["id_of_dependency_task"]
-        }
-      ]
-    }
-
-    Rules:
-    1. Tasks must be granular and actionable.
-    2. Define dependencies logically.
-    3. IMPORTANT: Plan for a standard web structure (index.html, style.css, app.js) unless React/specific frameworks are requested.
-    4. Return raw JSON.
-  `;
-
-  const fullPrompt = `${systemPrompt}\n\nUser Request: ${prompt}`;
-  let responseText = "";
-
-  try {
     if (config.provider === 'google') {
       const ai = getGoogleClient(config);
       const response = await ai.models.generateContent({
         model: 'gemini-3-pro-preview',
-        contents: fullPrompt,
-        config: { responseMimeType: "application/json" }
-      });
-      responseText = response.text || "{}";
-    } else {
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${config.openRouterKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "NexBuilder"
-        },
-        body: JSON.stringify({
-          model: config.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt }
-          ]
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`OpenRouter API Error: ${response.status} ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      responseText = data.choices?.[0]?.message?.content || "{}";
-    }
-
-    const parsed = parseJSONFromText(responseText);
-
-    if (!parsed.tasks || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
-      throw new Error("AI returned a valid JSON object but it contained no tasks.");
-    }
-
-    return {
-        name: parsed.name || "Untitled Project",
-        tasks: parsed.tasks
-    };
-
-  } catch (error) {
-    console.error("AI Service Error (generateProjectPlan):", error);
-    throw error; // Propagate error to UI
-  }
-};
-
-export const decomposeTask = async (
-  task: Task,
-  config: AppConfig
-): Promise<Task[]> => {
-  
-  validateConfig(config);
-
-  const systemPrompt = `
-    You are a Senior Technical Lead.
-    A developer needs this task broken down into 2-4 smaller, sequential sub-tasks.
-    
-    Current Task: ${task.title}
-    Description: ${task.description}
-    
-    Output JSON array of objects (NO wrapping object, just the array):
-    [
-      {
-        "title": "Subtask 1",
-        "description": "...",
-        "agentRole": "developer"
-      },
-      ...
-    ]
-  `;
-
-  let responseText = "";
-
-  try {
-    if (config.provider === 'google') {
-      const ai = getGoogleClient(config);
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview', 
-        contents: systemPrompt,
-        config: { responseMimeType: "application/json" }
-      });
-      responseText = response.text || "[]";
-    } else {
-       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${config.openRouterKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "NexBuilder"
-        },
-        body: JSON.stringify({
-          model: config.model,
-          messages: [{ role: "user", content: systemPrompt }]
-        })
-      });
-      
-      if (!response.ok) throw new Error("OpenRouter API Error");
-      const data = await response.json();
-      responseText = data.choices?.[0]?.message?.content || "[]";
-    }
-    
-    const parsed = parseJSONFromText(responseText);
-    return Array.isArray(parsed) ? parsed : parsed.tasks || [];
-  } catch (e) {
-    console.error("Failed to parse decomposition", e);
-    throw new Error("Failed to decompose task: " + (e as Error).message);
-  }
-};
-
-export const executeTask = async (
-  task: Task, 
-  context: string, 
-  config: AppConfig
-): Promise<string> => {
-  
-  validateConfig(config);
-
-  const systemPrompt = `
-    You are an expert AI ${task.agentRole}.
-    Task: ${task.title}
-    Description: ${task.description}
-    
-    Context from previous tasks:
-    ${context}
-    
-    INSTRUCTIONS:
-    1. Perform the task diligently.
-    2. If you are writing code, you MUST output the code inside strict XML tags like this:
-       <file path="filename.ext">
-       ... code content ...
-       </file>
-    3. You can output multiple files in one response.
-    4. Do NOT put the <file> tags inside markdown code blocks. Keep them raw so the parser can find them.
-    5. If editing an existing file, provide the FULL new content of the file.
-  `;
-
-  try {
-    if (config.provider === 'google') {
-      const ai = getGoogleClient(config);
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: systemPrompt,
+        contents: `${systemPrompt}\n\nUser: ${userPrompt}`,
+        config: jsonMode ? { responseMimeType: "application/json" } : undefined
       });
       return response.text || "";
     } else {
@@ -263,17 +89,124 @@ export const executeTask = async (
         },
         body: JSON.stringify({
           model: config.model,
-          messages: [{ role: "user", content: systemPrompt }]
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ]
         })
       });
-      
-      if (!response.ok) throw new Error(`OpenRouter Error: ${response.status}`);
-      
+
+      if (!response.ok) {
+        throw new Error(`OpenRouter API Error: ${response.status} ${response.statusText}`);
+      }
+
       const data = await response.json();
       return data.choices?.[0]?.message?.content || "";
     }
+};
+
+export const generateProjectPlan = async (
+  prompt: string, 
+  config: AppConfig
+): Promise<{ name: string; tasks: Task[]; packages: string[] }> => {
+  
+  const systemPrompt = `
+    You are an expert Technical Architect.
+    Break down a user's app idea into a DAG of executable tasks.
+    
+    Output JSON:
+    {
+      "name": "Project Name",
+      "packages": ["react", "framer-motion"], // List of NPM packages required
+      "tasks": [
+        {
+          "id": "unique_id",
+          "title": "Task Title",
+          "description": "Detailed instruction.",
+          "agentRole": "architect" | "developer",
+          "dependencies": []
+        }
+      ]
+    }
+  `;
+
+  try {
+    const responseText = await callAI(systemPrompt, prompt, config, true);
+    const parsed = parseJSONFromText(responseText);
+
+    if (!parsed.tasks || !Array.isArray(parsed.tasks)) {
+      throw new Error("Invalid plan generated.");
+    }
+
+    return {
+        name: parsed.name || "Untitled Project",
+        tasks: parsed.tasks,
+        packages: parsed.packages || []
+    };
+
   } catch (error) {
-     console.error("Task Execution Error", error);
-     throw error;
+    console.error("AI Plan Error:", error);
+    throw error;
   }
+};
+
+export const decomposeTask = async (task: Task, config: AppConfig): Promise<Task[]> => {
+  const systemPrompt = `
+    Split this task into 2-4 sequential sub-tasks.
+    Output JSON Array: [{"title": "...", "description": "...", "agentRole": "developer"}]
+  `;
+  const responseText = await callAI(systemPrompt, JSON.stringify(task), config, true);
+  const parsed = parseJSONFromText(responseText);
+  return Array.isArray(parsed) ? parsed : parsed.tasks || [];
+};
+
+export const refineTaskDescription = async (
+    currentDescription: string, 
+    taskTitle: string,
+    config: AppConfig
+): Promise<string> => {
+    const systemPrompt = `
+      You are a Senior Tech Lead.
+      Refine the following task instruction to be highly detailed, technical, and actionable for an AI developer.
+      Include specific requirements, edge cases to handle, and suggested implementation details.
+      Keep it as a plain text string (markdown allowed).
+    `;
+    const userPrompt = `Task: ${taskTitle}\nDraft Instructions: ${currentDescription}`;
+    return await callAI(systemPrompt, userPrompt, config, false);
+};
+
+export const executeTask = async (
+  task: Task, 
+  context: string, 
+  packages: string[],
+  config: AppConfig
+): Promise<string> => {
+  
+  const packageImportInstructions = packages.length > 0 
+    ? `
+      AVAILABLE PACKAGES: ${packages.join(', ')}
+      IMPORTANT: When using these packages in frontend code (HTML/JS/React), you MUST import them via ESM.SH.
+      Example: import React from "https://esm.sh/react";
+      Example: import { motion } from "https://esm.sh/framer-motion";
+      Do not use 'require' or bare module specifiers.
+    ` 
+    : '';
+
+  const systemPrompt = `
+    You are an expert AI ${task.agentRole}.
+    Task: ${task.title}
+    Description: ${task.description}
+    
+    ${packageImportInstructions}
+
+    Context:
+    ${context}
+    
+    INSTRUCTIONS:
+    1. Write code inside strict <file path="filename.ext">...</file> tags.
+    2. Do not use markdown code blocks for the file tags.
+    3. Provide full file content.
+  `;
+
+  return await callAI(systemPrompt, "Execute this task.", config, false);
 };

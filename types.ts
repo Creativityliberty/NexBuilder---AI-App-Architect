@@ -1,3 +1,4 @@
+
 export type ViewMode = 'home' | 'planner' | 'builder' | 'preview' | 'settings' | 'history';
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
@@ -34,6 +35,7 @@ export interface Project {
   description: string;
   tasks: Task[];
   files: ProjectFile[];
+  packages: string[]; // List of npm packages (e.g. 'framer-motion', 'lodash')
   activityLog: ActivityLogEntry[];
   createdAt: number;
 }
