@@ -6,7 +6,7 @@ import BuilderBoard from './components/BuilderBoard';
 import CodePreview from './components/CodePreview';
 import { ViewMode, AppConfig, Project, Task } from './types';
 import { generateProjectPlan, executeTask, extractFilesFromOutput } from './services/aiService';
-import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge } from 'lucide-react';
+import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge, Trash2, History, Save } from 'lucide-react';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewMode>('home');
@@ -20,11 +20,36 @@ const App: React.FC = () => {
   const [project, setProject] = useState<Project | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [lastSaved, setLastSaved] = useState<number>(Date.now());
 
-  // Load config from local storage
+  // Initialization: Load config and state from local storage
   useEffect(() => {
+    // 1. Config
     const savedConfig = localStorage.getItem('nexbuilder_config');
     if (savedConfig) setConfig(JSON.parse(savedConfig));
+
+    // 2. Project Idea Input
+    const savedIdea = localStorage.getItem('nexbuilder_idea');
+    if (savedIdea) setProjectIdea(savedIdea);
+
+    // 3. Full Project State
+    const savedProject = localStorage.getItem('nexbuilder_project');
+    if (savedProject) {
+        try {
+            const loadedProject: Project = JSON.parse(savedProject);
+            
+            // CRASH RECOVERY: 
+            // If the app was closed while tasks were 'in_progress', they will be stuck forever.
+            // We must reset them to 'pending' so the user can re-run them.
+            loadedProject.tasks = loadedProject.tasks.map(t => 
+                t.status === 'in_progress' ? { ...t, status: 'pending' } : t
+            );
+
+            setProject(loadedProject);
+        } catch (e) {
+            console.error("Failed to load saved project", e);
+        }
+    }
   }, []);
 
   const handleSaveConfig = (newConfig: AppConfig) => {
@@ -32,6 +57,18 @@ const App: React.FC = () => {
     localStorage.setItem('nexbuilder_config', JSON.stringify(newConfig));
     setCurrentView('home');
   };
+
+  // Auto-Save Effect
+  useEffect(() => {
+    // Save Idea
+    localStorage.setItem('nexbuilder_idea', projectIdea);
+
+    // Save Project
+    if (project) {
+        localStorage.setItem('nexbuilder_project', JSON.stringify(project));
+        setLastSaved(Date.now());
+    }
+  }, [project, projectIdea]);
 
   const handleCreateProject = async () => {
     if (!projectIdea) return;
@@ -52,6 +89,16 @@ const App: React.FC = () => {
       alert(`Error generating plan: ${(e as Error).message}`);
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleResetProject = () => {
+    if (confirm("Are you sure you want to delete this project? This cannot be undone.")) {
+        setProject(null);
+        setProjectIdea('');
+        localStorage.removeItem('nexbuilder_project');
+        localStorage.removeItem('nexbuilder_idea');
+        setCurrentView('home');
     }
   };
 
@@ -164,6 +211,12 @@ const App: React.FC = () => {
               </button>
             </div>
           </div>
+          {/* Recovery hint if idea was loaded */}
+          {projectIdea && !project && (
+             <div className="mt-4 flex items-center justify-center gap-2 text-slate-500 text-sm">
+                <History size={14} /> Draft loaded from local storage
+             </div>
+          )}
         </div>
       );
     }
@@ -173,9 +226,21 @@ const App: React.FC = () => {
         case 'home':
           return (
             <div className="max-w-4xl mx-auto mt-10">
-              <div className="glass-panel p-8 rounded-3xl border-l-4 border-l-blue-500">
+              <div className="glass-panel p-8 rounded-3xl border-l-4 border-l-blue-500 relative overflow-hidden">
+                <div className="absolute top-4 right-4 flex gap-3">
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/50 text-slate-400 text-xs border border-slate-700">
+                        <Save size={12} /> Auto-saved
+                    </div>
+                    <button 
+                        onClick={handleResetProject}
+                        className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg transition-colors text-xs font-bold uppercase tracking-wider"
+                    >
+                        <Trash2 size={14} /> Reset Project
+                    </button>
+                </div>
+
                 <h2 className="text-3xl font-bold mb-2">{project.name}</h2>
-                <p className="text-slate-400 mb-6">{project.description}</p>
+                <p className="text-slate-400 mb-6 max-w-2xl">{project.description}</p>
                 <div className="grid grid-cols-4 gap-4">
                   <div className="bg-slate-800/50 p-4 rounded-xl">
                     <div className="text-slate-500 text-xs uppercase font-bold">Tasks</div>
