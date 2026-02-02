@@ -4,9 +4,10 @@ import SettingsModal from './components/SettingsModal';
 import DAGVisualizer from './components/DAGVisualizer';
 import BuilderBoard from './components/BuilderBoard';
 import CodePreview from './components/CodePreview';
-import { ViewMode, AppConfig, Project, Task } from './types';
+import HistoryView from './components/HistoryView';
+import { ViewMode, AppConfig, Project, Task, ActivityLogEntry } from './types';
 import { generateProjectPlan, executeTask, extractFilesFromOutput, decomposeTask } from './services/aiService';
-import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge, Trash2, History, Save, Scissors } from 'lucide-react';
+import { Sparkles, Terminal, ArrowRight, Activity, Layers, GitMerge, Trash2, History, Save, Scissors, AlertTriangle } from 'lucide-react';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewMode>('home');
@@ -22,6 +23,7 @@ const App: React.FC = () => {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isSplitting, setIsSplitting] = useState(false);
   const [lastSaved, setLastSaved] = useState<number>(Date.now());
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Initialization: Load config and state from local storage
   useEffect(() => {
@@ -39,12 +41,12 @@ const App: React.FC = () => {
         try {
             const loadedProject: Project = JSON.parse(savedProject);
             
-            // CRASH RECOVERY: 
-            // If the app was closed while tasks were 'in_progress', they will be stuck forever.
-            // We must reset them to 'pending' so the user can re-run them.
+            // CRASH RECOVERY
             loadedProject.tasks = loadedProject.tasks.map(t => 
                 t.status === 'in_progress' ? { ...t, status: 'pending' } : t
             );
+
+            if (!loadedProject.activityLog) loadedProject.activityLog = [];
 
             setProject(loadedProject);
         } catch (e) {
@@ -61,10 +63,7 @@ const App: React.FC = () => {
 
   // Auto-Save Effect
   useEffect(() => {
-    // Save Idea
     localStorage.setItem('nexbuilder_idea', projectIdea);
-
-    // Save Project
     if (project) {
         localStorage.setItem('nexbuilder_project', JSON.stringify(project));
         setLastSaved(Date.now());
@@ -74,20 +73,29 @@ const App: React.FC = () => {
   const handleCreateProject = async () => {
     if (!projectIdea) return;
     setIsGenerating(true);
+    setErrorMsg(null);
     try {
       const plan = await generateProjectPlan(projectIdea, config);
+      
+      if (plan.tasks.length === 0) {
+        throw new Error("The AI returned an empty plan. Please try again with a more detailed description.");
+      }
+
       const newProject: Project = {
         id: crypto.randomUUID(),
         name: plan.name || 'New Project',
         description: projectIdea,
         tasks: plan.tasks.map(t => ({ ...t, status: 'pending' })),
         files: [],
+        activityLog: [],
         createdAt: Date.now()
       };
       setProject(newProject);
       setCurrentView('planner');
     } catch (e) {
-      alert(`Error generating plan: ${(e as Error).message}`);
+      console.error(e);
+      setErrorMsg((e as Error).message);
+      // Don't switch view if failed
     } finally {
       setIsGenerating(false);
     }
@@ -119,24 +127,31 @@ const App: React.FC = () => {
     if (!project) return;
     setIsSplitting(true);
     
+    setProject(prev => {
+        if (!prev) return null;
+        const logEntry: ActivityLogEntry = {
+            id: crypto.randomUUID(),
+            taskId: task.id,
+            taskTitle: task.title,
+            timestamp: Date.now(),
+            status: 'split',
+            details: 'Decomposing task into subtasks...'
+        };
+        return { ...prev, activityLog: [...(prev.activityLog || []), logEntry] };
+    });
+    
     try {
-      // 1. Ask AI to break it down
       const subTasksRaw = await decomposeTask(task, config);
       
       if (subTasksRaw.length === 0) {
-        alert("Could not break down this task.");
-        return;
+        throw new Error("AI returned no subtasks.");
       }
 
       setProject(prev => {
         if (!prev) return null;
         
-        // 2. Prepare new tasks with IDs and Dependencies
         const newTasks: Task[] = [];
         let previousId: string | null = null;
-        
-        // The first subtask inherits the original task's dependencies
-        // Subsequent subtasks depend on the previous subtask
         
         subTasksRaw.forEach((st, index) => {
           const newId = crypto.randomUUID();
@@ -154,8 +169,6 @@ const App: React.FC = () => {
 
         const lastNewTaskId = newTasks[newTasks.length - 1].id;
 
-        // 3. Rewire the DAG
-        // Any task that depended on the ORIGINAL task must now depend on the LAST new task
         const updatedTasks = prev.tasks.filter(t => t.id !== task.id).map(t => {
           if (t.dependencies.includes(task.id)) {
             return {
@@ -166,11 +179,19 @@ const App: React.FC = () => {
           return t;
         });
 
-        // 4. Insert new tasks
-        // We put them roughly where the old one was to keep order sane-ish
+        const successLog: ActivityLogEntry = {
+            id: crypto.randomUUID(),
+            taskId: task.id,
+            taskTitle: task.title,
+            timestamp: Date.now(),
+            status: 'split',
+            details: `Successfully split into ${newTasks.length} subtasks.`
+        };
+
         return {
           ...prev,
-          tasks: [...updatedTasks, ...newTasks]
+          tasks: [...updatedTasks, ...newTasks],
+          activityLog: [...(prev.activityLog || []), successLog]
         };
       });
 
@@ -185,35 +206,44 @@ const App: React.FC = () => {
     if (!project) return;
     setIsExecuting(true);
     
-    // Update status to in_progress
-    const updatedTasks = project.tasks.map(t => 
-      t.id === task.id ? { ...t, status: 'in_progress' as const } : t
-    );
-    setProject({ ...project, tasks: updatedTasks });
+    const startLog: ActivityLogEntry = {
+        id: crypto.randomUUID(),
+        taskId: task.id,
+        taskTitle: task.title,
+        timestamp: Date.now(),
+        status: 'started'
+    };
+
+    setProject(prev => {
+        if (!prev) return null;
+        const updatedTasks = prev.tasks.map(t => 
+            t.id === task.id ? { ...t, status: 'in_progress' as const } : t
+        );
+        return { 
+            ...prev, 
+            tasks: updatedTasks,
+            activityLog: [...(prev.activityLog || []), startLog]
+        };
+    });
 
     try {
-      // Gather context
       const context = task.dependencies
         .map(depId => {
-          const t = project.tasks.find(pt => pt.id === depId);
+          const t = project!.tasks.find(pt => pt.id === depId);
           return t ? `Task "${t.title}":\n${t.output}` : '';
         })
         .join('\n\n');
       
-      // Also provide list of existing files to the agent so it knows what to edit
       const fileContext = project.files.length > 0 
         ? `\nExisting Files:\n${project.files.map(f => `- ${f.path}`).join('\n')}` 
         : '';
 
       const output = await executeTask(task, context + fileContext, config);
-      
-      // Extract files from output
       const newFiles = extractFilesFromOutput(output);
 
       setProject(prev => {
         if (!prev) return null;
         
-        // Merge new files with existing ones (overwrite if path exists)
         const updatedFiles = [...prev.files];
         newFiles.forEach(nf => {
           const index = updatedFiles.findIndex(f => f.path === nf.path);
@@ -224,25 +254,46 @@ const App: React.FC = () => {
           }
         });
 
+        const successLog: ActivityLogEntry = {
+            id: crypto.randomUUID(),
+            taskId: task.id,
+            taskTitle: task.title,
+            timestamp: Date.now(),
+            status: 'completed',
+            details: output.substring(0, 300) + (output.length > 300 ? '...' : '')
+        };
+
         return {
           ...prev,
           files: updatedFiles,
           tasks: prev.tasks.map(t => 
             t.id === task.id ? { ...t, status: 'completed' as const, output } : t
-          )
+          ),
+          activityLog: [...(prev.activityLog || []), successLog]
         };
       });
     } catch (e) {
       setProject(prev => {
         if (!prev) return null;
+        
+        const failLog: ActivityLogEntry = {
+            id: crypto.randomUUID(),
+            taskId: task.id,
+            taskTitle: task.title,
+            timestamp: Date.now(),
+            status: 'failed',
+            details: (e as Error).message
+        };
+
         return {
           ...prev,
           tasks: prev.tasks.map(t => 
             t.id === task.id ? { ...t, status: 'failed' as const } : t
-          )
+          ),
+          activityLog: [...(prev.activityLog || []), failLog]
         };
       });
-      alert('Task execution failed');
+      alert('Task execution failed: ' + (e as Error).message);
     } finally {
       setIsExecuting(false);
     }
@@ -266,7 +317,7 @@ const App: React.FC = () => {
             Describe your application idea. The architect agent will decompose it into a task graph and execute it step-by-step.
           </p>
           
-          <div className="relative group max-w-xl mx-auto">
+          <div className="relative group max-w-xl mx-auto mb-6">
             <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-500 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-1000 group-hover:duration-200"></div>
             <div className="relative flex bg-slate-900 rounded-2xl p-2 border border-slate-700 shadow-2xl">
               <input 
@@ -290,8 +341,17 @@ const App: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {errorMsg && (
+            <div className="max-w-xl mx-auto bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-xl flex items-center gap-3 animate-in slide-in-from-bottom-2">
+               <AlertTriangle size={20} />
+               <div className="text-sm font-medium">{errorMsg}</div>
+               <button onClick={() => setErrorMsg(null)} className="ml-auto hover:text-white"><Trash2 size={14}/></button>
+            </div>
+          )}
+
           {/* Recovery hint if idea was loaded */}
-          {projectIdea && !project && (
+          {projectIdea && !project && !errorMsg && (
              <div className="mt-4 flex items-center justify-center gap-2 text-slate-500 text-sm">
                 <History size={14} /> Draft loaded from local storage
              </div>
@@ -391,6 +451,8 @@ const App: React.FC = () => {
           );
         case 'preview':
           return <CodePreview project={project} />;
+        case 'history':
+          return <HistoryView project={project} />;
         default: 
           return null;
       }

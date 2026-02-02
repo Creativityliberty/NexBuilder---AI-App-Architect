@@ -6,7 +6,8 @@ import {
   Hammer, 
   Settings, 
   Hexagon,
-  Eye
+  Eye,
+  History
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -52,6 +53,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onViewChange }) => {
         <NavItem view="planner" icon={GitMerge} label="DAG Planner" />
         <NavItem view="builder" icon={Hammer} label="Build & Run" />
         <NavItem view="preview" icon={Eye} label="Live Preview" />
+        <NavItem view="history" icon={History} label="History Log" />
       </nav>
 
       <div className="pt-6 border-t border-slate-700/50">
